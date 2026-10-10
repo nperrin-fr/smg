@@ -193,6 +193,15 @@ pub trait ModelProcessorSpec: Send + Sync {
         false
     }
 
+    /// Whether this spec's processors emit TokenSpeed's tensor layout, which
+    /// other engines' models do not read. The gateway applies such a spec only
+    /// while no worker of the model runs another engine, and sends its tensors
+    /// to TokenSpeed workers only; behind any other engine the model is handled
+    /// as having no spec, and its workers process media themselves.
+    fn tokenspeed_only(&self) -> bool {
+        false
+    }
+
     fn placeholder_token(&self, metadata: &ModelMetadata) -> RegistryResult<String>;
     fn placeholder_token_id(&self, metadata: &ModelMetadata) -> RegistryResult<TokenId>;
     fn placeholder_token_for(
@@ -221,6 +230,15 @@ pub trait ModelProcessorSpec: Send + Sync {
             }),
         }
     }
+    /// The text the model's chat template writes for one item of `modality`
+    /// when that is not the anchor token itself but several tokens (a
+    /// literal such as `<video>`). The gateway rewrites each occurrence in
+    /// the rendered prompt to the anchor before tokenizing; `None` when the
+    /// template writes the anchor.
+    fn rendered_marker_for(&self, _modality: Modality) -> Option<&'static str> {
+        None
+    }
+
     fn modality_limits(&self, metadata: &ModelMetadata)
         -> RegistryResult<HashMap<Modality, usize>>;
 

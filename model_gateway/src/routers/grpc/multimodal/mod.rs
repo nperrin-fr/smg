@@ -80,8 +80,8 @@ pub(crate) use inflight::{
 };
 pub(crate) use item_limits::engine_item_limits;
 pub(crate) use plan::{
-    prepare_placeholder_tokens, resolve_media_part_order, validate_rendered_media_anchors,
-    MediaPlan, PlaceholderTokens,
+    anchor_rendered_markers, prepare_placeholder_tokens, resolve_media_part_order,
+    validate_rendered_media_anchors, MediaPlan, PlaceholderTokens,
 };
 pub(crate) use process::process_multimodal_plan;
 pub(crate) use refs::{
@@ -124,6 +124,9 @@ pub(crate) struct MultimodalIntermediate {
     /// Independently preprocessed modality batches sharing one expanded prompt.
     /// A single-modality request is represented by a one-element vector.
     batches: Vec<PrecomputedMultimodalIntermediate>,
+    /// Built by a TokenSpeed-only spec (`ModelProcessorSpec::tokenspeed_only`):
+    /// only a TokenSpeed engine reads these tensors.
+    tokenspeed_only: bool,
 }
 
 impl MultimodalIntermediate {
@@ -144,7 +147,15 @@ impl MultimodalIntermediate {
                 "multimodal intermediate contains an empty {modality} batch"
             );
         }
-        Ok(Self { batches })
+        Ok(Self {
+            batches,
+            tokenspeed_only: false,
+        })
+    }
+
+    pub(crate) fn with_tokenspeed_only(mut self, tokenspeed_only: bool) -> Self {
+        self.tokenspeed_only = tokenspeed_only;
+        self
     }
 
     pub(crate) fn batches(&self) -> &[PrecomputedMultimodalIntermediate] {

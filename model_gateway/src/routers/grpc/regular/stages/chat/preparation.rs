@@ -142,6 +142,7 @@ pub(crate) async fn prepare_chat_like(
                 &tokenizer_id,
                 &tokenizer_source,
                 &engine_limits,
+                Some(&ctx.components.worker_registry),
             )
             .await
             .map_err(|e| {

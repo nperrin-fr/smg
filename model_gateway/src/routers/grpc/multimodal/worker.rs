@@ -391,6 +391,12 @@ impl WorkerMediaPipeline {
                     &model_registry.spec_names()
                 ))
             })?;
+            anyhow::ensure!(
+                !spec.tokenspeed_only(),
+                "the {} spec preprocesses media into TokenSpeed's layout, which vLLM does not \
+                 read; serve this model's media with --mm-processor inprocess",
+                spec.name()
+            );
             let limits = spec.modality_limits(&metadata).map_err(|error| {
                 anyhow::anyhow!("reading the {} spec's media limits: {error}", spec.name())
             })?;
@@ -549,6 +555,7 @@ impl WorkerMediaPipeline {
             CONFIG_KEY,
             &self.model_dir,
             &HashMap::new(),
+            None,
         )
         .await
         .map_err(|error| WorkerMediaError::Invalid(format!("{error:#}")))?;
@@ -991,6 +998,42 @@ mod unsupported_model_tests {
     use llm_tokenizer::MockTokenizer;
 
     use super::*;
+
+    /// A spec whose tensors only TokenSpeed reads never preprocesses for this
+    /// vLLM worker: the pipeline refuses to start.
+    #[tokio::test]
+    async fn a_tokenspeed_only_spec_is_refused_at_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"model_type": "NemotronH_Nano_Omni_Reasoning_V3"}"#,
+        )
+        .unwrap();
+        let path = dir.path().to_str().unwrap().to_string();
+        let settings = WorkerMediaSettings {
+            model_dir: path.clone(),
+            model_id: path,
+            served_model_name: None,
+            pixel_format: PixelFormat::Normalized,
+            encoder_dtype: "bfloat16".to_string(),
+            processor_kwargs: serde_json::Map::new(),
+            max_items: None,
+            engine_item_limits: HashMap::new(),
+            max_item_bytes: None,
+            allowed_domains: None,
+            fetch_timeout: Duration::from_secs(1),
+            video_fetch_timeout: Duration::from_secs(1),
+            video_frame_budget: None,
+            video_loader_rule: None,
+        };
+        let error = WorkerMediaPipeline::new(settings, Arc::new(MockTokenizer::default()))
+            .await
+            .err()
+            .expect("a TokenSpeed-only spec");
+        let message = format!("{error:#}");
+        assert!(message.contains("TokenSpeed's layout"), "{message}");
+        assert!(message.contains("--mm-processor inprocess"), "{message}");
+    }
 
     /// A family without a spec is refused in the terms an operator acts on:
     /// the model type and architectures, the served name, the families the

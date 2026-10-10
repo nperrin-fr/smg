@@ -38,7 +38,11 @@ use crate::{
     routers::{
         common::sse,
         error,
-        grpc::{context::RequestContext, multimodal::PlaceholderTokens, ProcessedMessages},
+        grpc::{
+            context::RequestContext,
+            multimodal::{anchor_rendered_markers, PlaceholderTokens},
+            ProcessedMessages,
+        },
     },
     workflow::TokenizerLoadFailure,
 };
@@ -797,9 +801,10 @@ pub(crate) fn process_chat_messages_with_placeholders(
             .map_err(|e| format!("Failed to apply chat template: {e}"))?
     };
 
+    let text = anchor_rendered_markers(placeholder_tokens, &rendered.encoding, rendered.text);
     Ok((
         ProcessedMessages {
-            text: rendered.text,
+            text,
             stop_sequences: request.stop.clone(),
             unbilled_prompt_tokens: rendered.unbilled_prompt_tokens,
         },
@@ -2113,6 +2118,41 @@ mod tests {
         assert_eq!(native["messages"][1]["content"], "Sure");
         assert_eq!(native["add_generation_prompt"], json!(false));
         assert_eq!(native["assistant_prefix"], json!(""));
+    }
+
+    /// A text-rendered prompt reaches the tokenizer with each rendered marker
+    /// already rewritten to its anchor; without placeholders it is left alone.
+    /// The mock's JSON template writes no marker, so the one here is typed.
+    #[test]
+    fn rendered_markers_are_anchored_before_tokenizing() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": [
+                {"type": "video_url", "video_url": {"url": "https://a/v.mp4"}},
+                {"type": "text", "text": "What happens in <video>?"}
+            ]}]
+        }))
+        .unwrap();
+        let tokenizer = llm_tokenizer::MockTokenizer::new()
+            .with_content_format(ChatTemplateContentFormat::OpenAI)
+            .with_json_chat_template();
+        let mut placeholders = PlaceholderTokens::default();
+        placeholders.insert(Modality::Video, "<SPECIAL_30>".to_string());
+        placeholders.add_rendered_marker("<video>".to_string(), "<SPECIAL_30>".to_string());
+        let render = |placeholders| {
+            process_chat_messages_with_placeholders(
+                &request,
+                &tokenizer,
+                placeholders,
+                MediaPartOrder::MediaFirst,
+            )
+            .unwrap()
+            .0
+            .text
+        };
+        let anchored = render(Some(&placeholders));
+        assert!(anchored.contains("<SPECIAL_30>") && !anchored.contains("<video>"));
+        assert!(render(None).contains("<video>"));
     }
 
     /// Under the OpenAI content format the popped assistant message keeps its

@@ -137,6 +137,19 @@ pub(crate) fn runtime_supports_modality(runtime: RuntimeType, modality: Modality
     }
 }
 
+/// Whether every gRPC-pipeline worker registered for `model_id` runs
+/// TokenSpeed, the one engine a TokenSpeed-only spec's tensors are for (see
+/// `ModelProcessorSpec::tokenspeed_only`). HTTP workers of the model sit in
+/// another router's pool and never receive them. With none registered yet the
+/// spec applies, so the request fails at worker selection as for any model.
+pub(crate) fn served_by_tokenspeed(registry: &WorkerRegistry, model_id: &str) -> bool {
+    registry
+        .get_by_model(model_id)
+        .iter()
+        .filter(|worker| worker.connection_mode().uses_grpc_pipeline())
+        .all(|worker| worker.metadata().spec.runtime_type == RuntimeType::TokenSpeed)
+}
+
 /// Reject early if the selected backend does not support every modality present
 /// in the request. Runs at worker selection, once the runtime is known but
 /// before request building assembles the payload, so an unsupported combination
@@ -145,6 +158,11 @@ pub(crate) fn ensure_backend_supports_modalities(
     runtime: RuntimeType,
     intermediate: &MultimodalIntermediate,
 ) -> Result<()> {
+    // A worker of another engine may have registered since the spec was applied.
+    anyhow::ensure!(
+        !intermediate.tokenspeed_only || runtime == RuntimeType::TokenSpeed,
+        "this model's media was preprocessed for TokenSpeed; backend {runtime} cannot read it"
+    );
     for batch in intermediate.batches() {
         let modality = batch.media.modality();
         anyhow::ensure!(
@@ -333,6 +351,19 @@ mod tests {
         assert_eq!(err.to_string(), "backend mlx does not support image inputs");
     }
 
+    /// Tensors a TokenSpeed-only spec built reach only TokenSpeed, even from a
+    /// worker of another engine that registered after the spec was applied.
+    #[test]
+    fn tokenspeed_only_tensors_reach_only_tokenspeed() {
+        let intermediate = single_image_intermediate().with_tokenspeed_only(true);
+        assert!(ensure_backend_supports_modalities(RuntimeType::TokenSpeed, &intermediate).is_ok());
+        let err = ensure_backend_supports_modalities(RuntimeType::Vllm, &intermediate).unwrap_err();
+        assert!(
+            err.to_string().contains("preprocessed for TokenSpeed"),
+            "{err}"
+        );
+    }
+
     mod pool {
         use std::sync::Arc;
 
@@ -414,6 +445,47 @@ mod tests {
             assert!(!model_workers_language_model_only(
                 &all_lmo,
                 "another-model"
+            ));
+        }
+
+        /// A TokenSpeed-only spec applies unless a gRPC worker of another engine
+        /// is registered; with none registered, worker selection answers.
+        #[test]
+        fn served_by_tokenspeed_unless_another_engine_is_registered() {
+            let tokenspeed = |url| -> Arc<dyn Worker> {
+                Arc::new(
+                    BasicWorkerBuilder::new(url)
+                        .model(ModelCard::new(MODEL))
+                        .worker_type(WorkerType::Regular)
+                        .runtime_type(RuntimeType::TokenSpeed)
+                        .connection_mode(ConnectionMode::Grpc)
+                        .build(),
+                )
+            };
+            assert!(served_by_tokenspeed(&registry_with(vec![]), MODEL));
+            assert!(served_by_tokenspeed(
+                &registry_with(vec![tokenspeed("grpc://10.0.0.1:1")]),
+                MODEL
+            ));
+            assert!(!served_by_tokenspeed(
+                &registry_with(vec![
+                    tokenspeed("grpc://10.0.0.1:1"),
+                    worker("grpc://10.0.0.2:1", &[]),
+                ]),
+                MODEL
+            ));
+            // An HTTP worker of the model is outside the gRPC pool.
+            let http: Arc<dyn Worker> = Arc::new(
+                BasicWorkerBuilder::new("http://10.0.0.3:1")
+                    .model(ModelCard::new(MODEL))
+                    .worker_type(WorkerType::Regular)
+                    .runtime_type(RuntimeType::Vllm)
+                    .connection_mode(ConnectionMode::Http)
+                    .build(),
+            );
+            assert!(served_by_tokenspeed(
+                &registry_with(vec![tokenspeed("grpc://10.0.0.1:1"), http]),
+                MODEL
             ));
         }
 
