@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 use axum::response::Response;
-use llm_multimodal::Modality;
+use llm_multimodal::{EncoderInputFormat, Modality};
 
 use super::{plan::MediaPlan, MultimodalIntermediate};
 use crate::{
@@ -137,17 +137,29 @@ pub(crate) fn runtime_supports_modality(runtime: RuntimeType, modality: Modality
     }
 }
 
-/// Whether every gRPC-pipeline worker registered for `model_id` runs
-/// TokenSpeed, the one engine a TokenSpeed-only spec's tensors are for (see
-/// `ModelProcessorSpec::tokenspeed_only`). HTTP workers of the model sit in
-/// another router's pool and never receive them. With none registered yet the
-/// spec applies, so the request fails at worker selection as for any model.
-pub(crate) fn served_by_tokenspeed(registry: &WorkerRegistry, model_id: &str) -> bool {
+/// Whether `runtime`'s models read encoder inputs in `format` (see
+/// `ModelProcessorSpec::encoder_input_format`).
+pub(crate) fn runtime_reads_format(runtime: RuntimeType, format: EncoderInputFormat) -> bool {
+    match format {
+        EncoderInputFormat::Reference => true,
+        EncoderInputFormat::Packed => matches!(runtime, RuntimeType::TokenSpeed),
+    }
+}
+
+/// Whether every gRPC-pipeline worker registered for `model_id` reads
+/// `format`. HTTP workers of the model sit in another router's pool and never
+/// receive the gateway's tensors. With none registered yet the format is
+/// readable, so the request fails at worker selection as for any model.
+pub(crate) fn fleet_reads_format(
+    registry: &WorkerRegistry,
+    model_id: &str,
+    format: EncoderInputFormat,
+) -> bool {
     registry
         .get_by_model(model_id)
         .iter()
         .filter(|worker| worker.connection_mode().uses_grpc_pipeline())
-        .all(|worker| worker.metadata().spec.runtime_type == RuntimeType::TokenSpeed)
+        .all(|worker| runtime_reads_format(worker.metadata().spec.runtime_type, format))
 }
 
 /// Reject early if the selected backend does not support every modality present
@@ -160,8 +172,8 @@ pub(crate) fn ensure_backend_supports_modalities(
 ) -> Result<()> {
     // A worker of another engine may have registered since the spec was applied.
     anyhow::ensure!(
-        !intermediate.tokenspeed_only || runtime == RuntimeType::TokenSpeed,
-        "this model's media was preprocessed for TokenSpeed; backend {runtime} cannot read it"
+        runtime_reads_format(runtime, intermediate.encoder_input_format()),
+        "this model's media was preprocessed into a format backend {runtime} does not read"
     );
     for batch in intermediate.batches() {
         let modality = batch.media.modality();
@@ -351,17 +363,15 @@ mod tests {
         assert_eq!(err.to_string(), "backend mlx does not support image inputs");
     }
 
-    /// Tensors a TokenSpeed-only spec built reach only TokenSpeed, even from a
-    /// worker of another engine that registered after the spec was applied.
+    /// Packed inputs reach only an engine that reads them, even from a worker
+    /// of another engine that registered after the spec was applied.
     #[test]
-    fn tokenspeed_only_tensors_reach_only_tokenspeed() {
-        let intermediate = single_image_intermediate().with_tokenspeed_only(true);
+    fn packed_inputs_reach_only_an_engine_that_reads_them() {
+        let intermediate =
+            single_image_intermediate().with_encoder_input_format(EncoderInputFormat::Packed);
         assert!(ensure_backend_supports_modalities(RuntimeType::TokenSpeed, &intermediate).is_ok());
         let err = ensure_backend_supports_modalities(RuntimeType::Vllm, &intermediate).unwrap_err();
-        assert!(
-            err.to_string().contains("preprocessed for TokenSpeed"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("does not read"), "{err}");
     }
 
     mod pool {
@@ -448,10 +458,14 @@ mod tests {
             ));
         }
 
-        /// A TokenSpeed-only spec applies unless a gRPC worker of another engine
-        /// is registered; with none registered, worker selection answers.
+        /// Packed inputs suit a fleet unless one of its gRPC workers runs an
+        /// engine that does not read them; with none registered, worker
+        /// selection answers.
         #[test]
-        fn served_by_tokenspeed_unless_another_engine_is_registered() {
+        fn a_fleet_reads_packed_inputs_unless_another_engine_is_registered() {
+            let packed = |registry: &WorkerRegistry| {
+                fleet_reads_format(registry, MODEL, EncoderInputFormat::Packed)
+            };
             let tokenspeed = |url| -> Arc<dyn Worker> {
                 Arc::new(
                     BasicWorkerBuilder::new(url)
@@ -462,17 +476,19 @@ mod tests {
                         .build(),
                 )
             };
-            assert!(served_by_tokenspeed(&registry_with(vec![]), MODEL));
-            assert!(served_by_tokenspeed(
-                &registry_with(vec![tokenspeed("grpc://10.0.0.1:1")]),
-                MODEL
-            ));
-            assert!(!served_by_tokenspeed(
-                &registry_with(vec![
-                    tokenspeed("grpc://10.0.0.1:1"),
-                    worker("grpc://10.0.0.2:1", &[]),
-                ]),
-                MODEL
+            assert!(packed(&registry_with(vec![])));
+            assert!(packed(&registry_with(vec![tokenspeed(
+                "grpc://10.0.0.1:1"
+            )])));
+            let mixed = registry_with(vec![
+                tokenspeed("grpc://10.0.0.1:1"),
+                worker("grpc://10.0.0.2:1", &[]),
+            ]);
+            assert!(!packed(&mixed));
+            assert!(fleet_reads_format(
+                &mixed,
+                MODEL,
+                EncoderInputFormat::Reference
             ));
             // An HTTP worker of the model is outside the gRPC pool.
             let http: Arc<dyn Worker> = Arc::new(
@@ -483,10 +499,10 @@ mod tests {
                     .connection_mode(ConnectionMode::Http)
                     .build(),
             );
-            assert!(served_by_tokenspeed(
-                &registry_with(vec![tokenspeed("grpc://10.0.0.1:1"), http]),
-                MODEL
-            ));
+            assert!(packed(&registry_with(vec![
+                tokenspeed("grpc://10.0.0.1:1"),
+                http
+            ])));
         }
 
         /// Media to a language-model-only pool is a 400 naming the modality

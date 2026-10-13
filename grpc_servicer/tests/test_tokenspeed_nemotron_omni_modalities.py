@@ -1,4 +1,6 @@
-"""The TokenSpeed servicer advertises Nemotron-H Omni's encoders from its config.
+"""The TokenSpeed servicer advertises Nemotron-H Omni's encoders from the engine's
+generic flags: multimodal (image), a video token (video) and an audio model with an
+audio token (audio).
 
 Run with: pytest grpc_servicer/tests/test_tokenspeed_nemotron_omni_modalities.py
 """
@@ -54,13 +56,17 @@ def servicer_mod(monkeypatch):
 
 
 def _modalities(servicer_mod, hf_config):
+    # The engine's ModelConfig flags for this architecture.
+    model_config = SimpleNamespace(
+        is_multimodal_active=True, is_multimodal=True, is_audio_model=True
+    )
     return servicer_mod.TokenSpeedSchedulerServicer._static_supported_modalities(
-        SimpleNamespace(is_multimodal_active=True), hf_config
+        model_config, hf_config
     )
 
 
 def test_vision_and_sound_towers_advertise_image_video_and_audio(servicer_mod):
-    config = {"model_type": MODEL_TYPE, "vision_config": {}, "sound_config": {}}
+    config = {"model_type": MODEL_TYPE, "video_token_id": 18, "audio_token_id": 27}
     assert _modalities(servicer_mod, config) == [
         common_pb2.IMAGE,
         common_pb2.VIDEO,
@@ -68,6 +74,6 @@ def test_vision_and_sound_towers_advertise_image_video_and_audio(servicer_mod):
     ]
 
 
-def test_without_a_sound_tower_audio_is_not_advertised(servicer_mod):
-    config = {"model_type": MODEL_TYPE, "vision_config": {}, "sound_config": None}
+def test_without_an_audio_token_audio_is_not_advertised(servicer_mod):
+    config = {"model_type": MODEL_TYPE, "video_token_id": 18, "audio_token_id": None}
     assert _modalities(servicer_mod, config) == [common_pb2.IMAGE, common_pb2.VIDEO]

@@ -152,9 +152,7 @@ impl ParakeetAudioProcessor {
         for audio in audios {
             let samples = self.resampled(audio)?;
             if samples.len() > MAX_AUDIO_SECONDS * self.params.sample_rate {
-                return Err(TransformError::ShapeError(format!(
-                    "audio exceeds the maximum duration of {MAX_AUDIO_SECONDS} s"
-                )));
+                return Err(too_long());
             }
             let sizes = self.params.clip_sizes(samples.len());
             let mut padded = samples;
@@ -197,6 +195,11 @@ impl ParakeetAudioProcessor {
                 "decoded audio sample rate must be positive".to_string(),
             ));
         }
+        // A clip well past the cap is refused before it is resampled; the cap
+        // itself applies to the resampled samples, as in the ref engine.
+        if decoded.samples.len() > (MAX_AUDIO_SECONDS + 1) * decoded.sample_rate {
+            return Err(too_long());
+        }
         if decoded.sample_rate == self.params.sample_rate {
             return Ok(decoded.samples);
         }
@@ -206,6 +209,12 @@ impl ParakeetAudioProcessor {
             self.params.sample_rate,
         )
     }
+}
+
+fn too_long() -> TransformError {
+    TransformError::ShapeError(format!(
+        "audio exceeds the maximum duration of {MAX_AUDIO_SECONDS} s"
+    ))
 }
 
 impl AudioPreProcessor for ParakeetAudioProcessor {
@@ -353,6 +362,14 @@ mod tests {
             .preprocess_decoded_clips(vec![audio(600)])
             .is_err());
         assert!(processor.preprocess_decoded_clips(vec![audio(1)]).is_ok());
+        // A clip far past the cap at another rate is refused before resampling.
+        let hour_at_48k = DecodedAudio {
+            samples: vec![0.0; 3600 * 48_000],
+            sample_rate: 48_000,
+        };
+        assert!(processor
+            .preprocess_decoded_clips(vec![hour_at_48k])
+            .is_err());
     }
 
     #[test]

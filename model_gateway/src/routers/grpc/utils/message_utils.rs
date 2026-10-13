@@ -313,7 +313,7 @@ pub(crate) async fn resolve_messages_media(
         &entry.id,
         &entry.source,
         &engine_limits,
-        Some(&components.worker_registry),
+        |format| multimodal::fleet_reads_format(&components.worker_registry, model_id, format),
     )
     .await
     .map_err(|e| {

@@ -28,7 +28,8 @@ use crate::{
     encoder_inputs::{ModelSpecificValue, PreprocessedEncoderInputs},
     media::FrameSampling,
     registry::{
-        MediaItemInfo, ModelMetadata, ModelProcessorSpec, ModelRegistryError, RegistryResult,
+        EncoderInputFormat, MediaItemInfo, ModelMetadata, ModelProcessorSpec, ModelRegistryError,
+        RegistryResult,
     },
     types::{
         EncoderFieldLayouts, FieldLayout, Modality, PlaceholderRange, PromptReplacement, TokenId,
@@ -260,10 +261,10 @@ impl ModelProcessorSpec for NemotronOmniSpec {
         Ok(Self::tokens(metadata, modality)?.1)
     }
 
-    /// The processors emit TokenSpeed's patch layout, not vLLM's
+    /// The processors emit packed patch rows and mel frames, not vLLM's
     /// `pixel_values_flat` / `pixel_values_flat_video` inputs.
-    fn tokenspeed_only(&self) -> bool {
-        true
+    fn encoder_input_format(&self) -> EncoderInputFormat {
+        EncoderInputFormat::Packed
     }
 
     fn rendered_marker_for(&self, modality: Modality) -> Option<&'static str> {
@@ -481,9 +482,9 @@ mod tests {
     }
 
     #[test]
-    fn preprocesses_for_tokenspeed_with_the_reference_loader_sampling() {
+    fn preprocesses_packed_inputs_with_the_reference_loader_sampling() {
         let spec = NemotronOmniSpec;
-        assert!(spec.tokenspeed_only());
+        assert_eq!(spec.encoder_input_format(), EncoderInputFormat::Packed);
         assert_eq!(
             spec.video_frame_sampling(),
             FrameSampling::UpTo { max_frames: 32 }

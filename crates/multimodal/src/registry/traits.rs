@@ -13,6 +13,19 @@ use crate::{
     vision::PreProcessorConfig,
 };
 
+/// The format of the encoder inputs a spec's processors emit, which decides
+/// the engines whose models can read them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderInputFormat {
+    /// The model family's reference processor outputs, which every engine
+    /// serving the family reads.
+    Reference,
+    /// Images and video frames as patch rows with per-item grids, audio as mel
+    /// frames with per-clip lengths, for an engine whose model reads them
+    /// packed rather than the reference processor's tensors.
+    Packed,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ModelRegistryError {
     #[error("unsupported model: {0}")]
@@ -193,13 +206,12 @@ pub trait ModelProcessorSpec: Send + Sync {
         false
     }
 
-    /// Whether this spec's processors emit TokenSpeed's tensor layout, which
-    /// other engines' models do not read. The gateway applies such a spec only
-    /// while no worker of the model runs another engine, and sends its tensors
-    /// to TokenSpeed workers only; behind any other engine the model is handled
-    /// as having no spec, and its workers process media themselves.
-    fn tokenspeed_only(&self) -> bool {
-        false
+    /// The format of the encoder inputs this spec's processors emit. The
+    /// gateway applies the spec only while every engine serving the model
+    /// reads that format; otherwise the model is handled as having no spec,
+    /// and its workers process media themselves.
+    fn encoder_input_format(&self) -> EncoderInputFormat {
+        EncoderInputFormat::Reference
     }
 
     fn placeholder_token(&self, metadata: &ModelMetadata) -> RegistryResult<String>;

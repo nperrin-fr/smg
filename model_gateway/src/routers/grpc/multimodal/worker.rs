@@ -24,6 +24,7 @@ use tracing::{info, warn};
 
 use super::{
     assemble::{assemble_vllm_batches_with, VllmAssembly},
+    capability::runtime_reads_format,
     config::{MultimodalComponents, MultimodalConfigRegistry, MultimodalModelConfig},
     mm_settings,
     pixel_cache::pixel_cache_with_budget,
@@ -31,7 +32,10 @@ use super::{
     process::process_multimodal_plan,
     RegistryTokenizer,
 };
-use crate::{routers::grpc::proto_wrapper::vllm_mm_identity, worker::http_client::build_with};
+use crate::{
+    routers::grpc::proto_wrapper::vllm_mm_identity,
+    worker::{http_client::build_with, RuntimeType},
+};
 
 /// A worker serves one model: the config registry's one key.
 const CONFIG_KEY: &str = "worker";
@@ -392,9 +396,9 @@ impl WorkerMediaPipeline {
                 ))
             })?;
             anyhow::ensure!(
-                !spec.tokenspeed_only(),
-                "the {} spec preprocesses media into TokenSpeed's layout, which vLLM does not \
-                 read; serve this model's media with --mm-processor inprocess",
+                runtime_reads_format(RuntimeType::Vllm, spec.encoder_input_format()),
+                "the {} spec preprocesses media into a format vLLM does not read; serve this \
+                 model's media with --mm-processor inprocess",
                 spec.name()
             );
             let limits = spec.modality_limits(&metadata).map_err(|error| {
@@ -555,7 +559,7 @@ impl WorkerMediaPipeline {
             CONFIG_KEY,
             &self.model_dir,
             &HashMap::new(),
-            None,
+            |format| runtime_reads_format(RuntimeType::Vllm, format),
         )
         .await
         .map_err(|error| WorkerMediaError::Invalid(format!("{error:#}")))?;
@@ -999,10 +1003,10 @@ mod unsupported_model_tests {
 
     use super::*;
 
-    /// A spec whose tensors only TokenSpeed reads never preprocesses for this
-    /// vLLM worker: the pipeline refuses to start.
+    /// A spec whose encoder inputs vLLM does not read never preprocesses for
+    /// this vLLM worker: the pipeline refuses to start.
     #[tokio::test]
-    async fn a_tokenspeed_only_spec_is_refused_at_startup() {
+    async fn a_spec_vllm_cannot_read_is_refused_at_startup() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.json"),
@@ -1029,9 +1033,9 @@ mod unsupported_model_tests {
         let error = WorkerMediaPipeline::new(settings, Arc::new(MockTokenizer::default()))
             .await
             .err()
-            .expect("a TokenSpeed-only spec");
+            .expect("a spec vLLM cannot read");
         let message = format!("{error:#}");
-        assert!(message.contains("TokenSpeed's layout"), "{message}");
+        assert!(message.contains("format vLLM does not read"), "{message}");
         assert!(message.contains("--mm-processor inprocess"), "{message}");
     }
 

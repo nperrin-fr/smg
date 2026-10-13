@@ -324,8 +324,8 @@ pub(crate) async fn process_multimodal_plan(
             encoder_input_key: part.encoder_input_key,
         })
         .collect::<Vec<_>>();
-    let intermediate =
-        MultimodalIntermediate::try_new(batches)?.with_tokenspeed_only(spec.tokenspeed_only());
+    let intermediate = MultimodalIntermediate::try_new(batches)?
+        .with_encoder_input_format(spec.encoder_input_format());
 
     if log_timing {
         info!(

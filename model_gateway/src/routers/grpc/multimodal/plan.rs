@@ -5,18 +5,17 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use llm_multimodal::{
-    registry::modality_limit_override, MediaContentPart, MediaPartOrder, Modality, ModelMetadata,
+    registry::modality_limit_override, EncoderInputFormat, MediaContentPart, MediaPartOrder,
+    Modality, ModelMetadata,
 };
 use llm_tokenizer::{traits::PromptEncoding, TokenizerTrait};
 use openai_protocol::worker::MmProcessingMode;
 
 use super::{
-    capability::served_by_tokenspeed,
     config::MultimodalComponents,
     item_limits::{check_item_counts, effective_item_limits, limit_numbers, EngineItemLimit},
     RegistryTokenizer,
 };
-use crate::worker::WorkerRegistry;
 
 /// Ordered media extracted from an API request.
 ///
@@ -175,10 +174,9 @@ impl PlaceholderTokens {
 /// A model without a spec is refused only where the router would process
 /// the media itself (`--mm-processing router`); otherwise its request is
 /// marked worker-only and goes on to a worker that processes media itself
-/// (see [`PlaceholderTokens::worker_only`]). A spec that only TokenSpeed reads
-/// counts as no spec when `fleet` holds a gRPC worker of another engine for the
-/// model (see [`served_by_tokenspeed`]), and always in the vLLM worker-side
-/// pipeline, which has no fleet (`None`).
+/// (see [`PlaceholderTokens::worker_only`]). A spec whose encoder input
+/// format the engines that would receive the request do not read
+/// (`reads_format` false) counts as no spec.
 #[expect(
     clippy::too_many_arguments,
     reason = "each argument is an independent input of the one lookup"
@@ -191,7 +189,7 @@ pub(crate) async fn prepare_placeholder_tokens(
     tokenizer_id: &str,
     tokenizer_source: &str,
     engine_limits: &HashMap<Modality, EngineItemLimit>,
-    fleet: Option<&WorkerRegistry>,
+    reads_format: impl Fn(EncoderInputFormat) -> bool,
 ) -> Result<PlaceholderTokens> {
     anyhow::ensure!(!plan.is_empty(), "multimodal media plan is empty");
     let model_config = components
@@ -204,9 +202,11 @@ pub(crate) async fn prepare_placeholder_tokens(
         tokenizer: &registry_tokenizer,
         config: &model_config.config,
     };
-    let Some(spec) = components.model_registry.lookup(&metadata).filter(|spec| {
-        !spec.tokenspeed_only() || fleet.is_some_and(|fleet| served_by_tokenspeed(fleet, model_id))
-    }) else {
+    let Some(spec) = components
+        .model_registry
+        .lookup(&metadata)
+        .filter(|spec| reads_format(spec.encoder_input_format()))
+    else {
         anyhow::ensure!(
             components.processing != MmProcessingMode::Router,
             "multimodal not supported for model: {model_id} on the router (no media spec for \
@@ -358,12 +358,13 @@ mod tests {
 
     use super::{
         super::{
+            capability::fleet_reads_format,
             config::{MultimodalConfigRegistry, MultimodalModelConfig},
             settings::MultimodalSettings,
         },
         *,
     };
-    use crate::worker::RuntimeType;
+    use crate::worker::{RuntimeType, WorkerRegistry};
 
     fn image_urls(count: usize) -> MediaPlan {
         MediaPlan::new((0..count).map(|i| MediaContentPart::ImageUrl {
@@ -411,7 +412,7 @@ mod tests {
             "tok",
             "unused",
             &engine,
-            None,
+            |_| true,
         )
         .await
         .unwrap_err()
@@ -433,7 +434,7 @@ mod tests {
             "tok",
             "unused",
             &HashMap::new(),
-            None,
+            |_| true,
         )
         .await
         .unwrap_err()
@@ -564,11 +565,11 @@ mod tests {
         registry
     }
 
-    /// A TokenSpeed-only spec applies only to a model served by TokenSpeed:
-    /// there it anchors each modality and rewrites the template's `<video>`;
-    /// behind another engine the model is handled as having no spec.
+    /// A spec emitting packed inputs applies only to a fleet that reads them:
+    /// on TokenSpeed it anchors each modality and rewrites the template's
+    /// `<video>`; behind another engine the model is handled as having no spec.
     #[tokio::test]
-    async fn a_tokenspeed_only_spec_applies_only_to_a_tokenspeed_fleet() {
+    async fn a_packed_spec_applies_only_to_a_fleet_that_reads_it() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.json"),
@@ -630,7 +631,7 @@ mod tests {
                     "tok",
                     source,
                     &HashMap::new(),
-                    Some(&fleet(runtime)),
+                    |format| fleet_reads_format(&fleet(runtime), "m", format),
                 )
                 .await
             }
@@ -691,7 +692,7 @@ mod tests {
                 "tok",
                 source,
                 &HashMap::new(),
-                None,
+                |_| true,
             )
             .await
             .unwrap_or_else(|error| panic!("{mode:?} placement: {error:#}"));
@@ -712,7 +713,7 @@ mod tests {
             "tok",
             source,
             &HashMap::new(),
-            None,
+            |_| true,
         )
         .await
         .expect_err("the router cannot process media it has no spec for");

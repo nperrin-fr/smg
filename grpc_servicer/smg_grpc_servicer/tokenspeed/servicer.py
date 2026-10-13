@@ -553,14 +553,6 @@ class TokenSpeedSchedulerServicer(tokenspeed_scheduler_pb2_grpc.TokenSpeedSchedu
                 supported.append(audio_modality)
             return supported
 
-        if model_type == "NemotronH_Nano_Omni_Reasoning_V3":
-            supported = []
-            if config_value(hf_config, "vision_config") is not None:
-                supported.extend([image_modality, video_modality])
-            if config_value(hf_config, "sound_config") is not None:
-                supported.append(audio_modality)
-            return supported
-
         thinker_config = config_value(hf_config, "thinker_config")
         if model_type == "qwen3_asr":
             audio_config = config_value(thinker_config, "audio_config")
@@ -581,6 +573,12 @@ class TokenSpeedSchedulerServicer(tokenspeed_scheduler_pb2_grpc.TokenSpeedSchedu
             supported.append(image_modality)
             if hf_config is not None and config_value(hf_config, "video_token_id") is not None:
                 supported.append(video_modality)
+        if (
+            bool(getattr(model_config, "is_audio_model", False))
+            and hf_config is not None
+            and config_value(hf_config, "audio_token_id") is not None
+        ):
+            supported.append(audio_modality)
         return supported
 
     # ------------------------------------------------------------------
