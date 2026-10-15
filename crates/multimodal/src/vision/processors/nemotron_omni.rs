@@ -76,10 +76,19 @@ impl NemotronOmniProcessor {
         Self
     }
 
+    /// Whether the checkpoint config sizes video frames by a patch target, the
+    /// only video sizing this port implements. Without one (Nemotron 3.5 Super
+    /// VL) vLLM squares every frame instead, so the checkpoint serves images only.
+    pub fn sizes_video(config: &Value) -> bool {
+        config
+            .pointer("/vision_config/video_target_num_patches")
+            .is_some_and(|v| !v.is_null())
+    }
+
     /// The checkpoint config field, as a JSON pointer, whose value differs from
     /// the geometry this port implements, if any.
     pub fn mismatched_config_field(config: &Value) -> Option<&'static str> {
-        [
+        let image = [
             ("/patch_size", json!(PATCH_SIZE)),
             ("/downsample_ratio", json!(0.5)),
             ("/norm_mean", json!(CLIP_MEAN)),
@@ -92,6 +101,8 @@ impl NemotronOmniProcessor {
                 "/vision_config/args/max_num_patches",
                 json!(MAX_NUM_PATCHES),
             ),
+        ];
+        let video = [
             (
                 "/vision_config/video_target_num_patches",
                 json!(VIDEO_TARGET_PATCHES),
@@ -101,22 +112,29 @@ impl NemotronOmniProcessor {
                 json!(VIDEO_TEMPORAL_PATCH_SIZE),
             ),
             ("/vision_config/video_maintain_aspect_ratio", json!(true)),
-        ]
-        .into_iter()
-        .find(|(pointer, value)| {
-            !config
-                .pointer(pointer)
-                .is_some_and(|actual| same_config_value(actual, value))
-        })
-        .map(|(pointer, _)| pointer)
-        .or_else(|| {
-            // vLLM sizes video frames by exactly one of these two.
-            let size = "/vision_config/video_target_img_size";
-            config
-                .pointer(size)
-                .is_some_and(|v| !v.is_null())
-                .then_some(size)
-        })
+        ];
+        let video: &[(&'static str, Value)] = if Self::sizes_video(config) {
+            &video
+        } else {
+            &[]
+        };
+        image
+            .iter()
+            .chain(video)
+            .find(|(pointer, value)| {
+                !config
+                    .pointer(pointer)
+                    .is_some_and(|actual| same_config_value(actual, value))
+            })
+            .map(|(pointer, _)| *pointer)
+            .or_else(|| {
+                // vLLM sizes video frames by exactly one of these two.
+                let size = "/vision_config/video_target_img_size";
+                config
+                    .pointer(size)
+                    .is_some_and(|v| !v.is_null())
+                    .then_some(size)
+            })
     }
 
     /// The `(rows, cols)` patch grid an image is resized to, as vLLM's

@@ -41,7 +41,8 @@ use crate::{
     },
 };
 
-const MODEL_TYPE: &str = "NemotronH_Nano_Omni_Reasoning_V3";
+/// Nemotron 3 Nano Omni's model_type, and the family's later one (Nemotron 3.5 Super VL).
+const MODEL_TYPES: [&str; 2] = ["NemotronH_Nano_Omni_Reasoning_V3", "nemotron_h_omni"];
 const IMAGE_PLACEHOLDER: &str = "<image>";
 const AUDIO_PLACEHOLDER: &str = "<so_embedding>";
 /// What the chat template writes for a video, and the reserved token the
@@ -234,7 +235,9 @@ impl ModelProcessorSpec for NemotronOmniSpec {
     }
 
     fn matches(&self, metadata: &ModelMetadata) -> bool {
-        metadata.config_model_type() == Some(MODEL_TYPE)
+        metadata
+            .config_model_type()
+            .is_some_and(|model_type| MODEL_TYPES.contains(&model_type))
     }
 
     fn placeholder_token(&self, _metadata: &ModelMetadata) -> RegistryResult<String> {
@@ -282,10 +285,10 @@ impl ModelProcessorSpec for NemotronOmniSpec {
         metadata: &ModelMetadata,
     ) -> RegistryResult<HashMap<Modality, usize>> {
         Self::check_config(metadata.config)?;
-        let mut limits = HashMap::from([
-            (Modality::Image, MAX_IMAGES_PER_REQUEST),
-            (Modality::Video, MAX_VIDEOS_PER_REQUEST),
-        ]);
+        let mut limits = HashMap::from([(Modality::Image, MAX_IMAGES_PER_REQUEST)]);
+        if NemotronOmniProcessor::sizes_video(metadata.config) {
+            limits.insert(Modality::Video, MAX_VIDEOS_PER_REQUEST);
+        }
         if Self::has_audio(metadata.config) {
             limits.insert(Modality::Audio, MAX_AUDIOS_PER_REQUEST);
         }
@@ -407,7 +410,7 @@ mod tests {
     /// The checkpoint config fields the spec reads.
     fn checkpoint_config() -> Value {
         json!({
-            "model_type": MODEL_TYPE,
+            "model_type": MODEL_TYPES[0],
             "patch_size": 16,
             "downsample_ratio": 0.5,
             "norm_mean": [0.48145466, 0.4578275, 0.40821073],
@@ -468,6 +471,26 @@ mod tests {
         let mut sized = checkpoint_config();
         sized["vision_config"]["video_target_img_size"] = json!(512);
         assert!(limits(&sized).is_err());
+        // Nemotron 3.5 Super VL: no sound encoder and no video frame target.
+        let mut super_vl = checkpoint_config();
+        super_vl["model_type"] = json!(MODEL_TYPES[1]);
+        super_vl["sound_config"] = Value::Null;
+        for field in ["video_target_num_patches", "video_maintain_aspect_ratio"] {
+            super_vl["vision_config"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+        }
+        assert!(spec.matches(&ModelMetadata {
+            model_id: "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+            tokenizer: &tokenizer,
+            config: &super_vl,
+        }));
+        let super_vl_limits = limits(&super_vl).expect("images need no video target");
+        assert_eq!(
+            super_vl_limits.keys().collect::<Vec<_>>(),
+            vec![&Modality::Image]
+        );
         let mut no_mels = checkpoint_config();
         no_mels["sound_config"]
             .as_object_mut()

@@ -239,8 +239,13 @@ impl VisionProcessorRegistry {
             );
         }
 
-        // Nemotron-H Omni (the HF model_type and the released ids' spelling).
-        for pattern in ["nemotronh_nano_omni", "nemotron-3-nano-omni"] {
+        // Nemotron-H Omni (the HF model_types and the released ids' spelling).
+        for pattern in [
+            "nemotronh_nano_omni",
+            "nemotron-3-nano-omni",
+            "nemotron_h_omni",
+            "nemotron-3.5-super-vl",
+        ] {
             registry.register(
                 pattern,
                 Box::new(super::processors::NemotronOmniProcessor::new()),
@@ -489,6 +494,25 @@ mod tests {
                 .find(model_id, model_type)
                 .expect("GLM-5.3-Flash processor");
             assert_eq!(processor.model_name(), "glm-5.3-flash");
+        }
+    }
+
+    #[test]
+    fn test_registry_finds_nemotron_omni_by_id_and_model_type() {
+        let registry = VisionProcessorRegistry::with_defaults();
+        for (model_id, model_type) in [
+            ("nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4", None),
+            ("nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4", None),
+            (
+                "/models/local-checkpoint",
+                Some("NemotronH_Nano_Omni_Reasoning_V3"),
+            ),
+            ("/models/local-checkpoint", Some("nemotron_h_omni")),
+        ] {
+            let processor = registry
+                .find(model_id, model_type)
+                .expect("Nemotron-H Omni vision processor");
+            assert_eq!(processor.model_name(), "nemotron_omni", "{model_id}");
         }
     }
 
