@@ -28,8 +28,8 @@ use crate::{
     encoder_inputs::{ModelSpecificValue, PreprocessedEncoderInputs},
     media::FrameSampling,
     registry::{
-        EncoderInputFormat, MediaItemInfo, ModelMetadata, ModelProcessorSpec, ModelRegistryError,
-        RegistryResult,
+        EncoderInputFormat, MediaItemInfo, MediaPartOrder, ModelMetadata, ModelProcessorSpec,
+        ModelRegistryError, RegistryResult,
     },
     types::{
         EncoderFieldLayouts, FieldLayout, Modality, PlaceholderRange, PromptReplacement, TokenId,
@@ -268,6 +268,12 @@ impl ModelProcessorSpec for NemotronOmniSpec {
     /// `pixel_values_flat` / `pixel_values_flat_video` inputs.
     fn encoder_input_format(&self) -> EncoderInputFormat {
         EncoderInputFormat::Packed
+    }
+
+    /// Super VL's template renders each part where it stands (`text\n<image>`
+    /// for an image after text); Nano's places every image first either way.
+    fn media_part_order(&self) -> MediaPartOrder {
+        MediaPartOrder::Authored
     }
 
     fn rendered_marker_for(&self, modality: Modality) -> Option<&'static str> {
@@ -513,6 +519,7 @@ mod tests {
             FrameSampling::UpTo { max_frames: 32 }
         );
         assert_eq!(spec.rendered_marker_for(Modality::Video), Some("<video>"));
+        assert_eq!(spec.media_part_order(), MediaPartOrder::Authored);
     }
 
     #[test]
